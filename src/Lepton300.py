@@ -7,6 +7,17 @@ from datetime import datetime
 print("Lepton 3.0 - FLIR E-Series UI Edition")
 
 # -----------------------------
+# Key Controls Guide
+# -----------------------------
+print("\n📖 Key Controls:")
+print("  v - Start / Stop AVI recording (silent)")
+print("  s - Take screenshot (PNG)")
+print("  m - Change colormap")
+print("  h - Toggle HUD display")
+print("  r - Toggle raw/grayscale view")
+print("  q - Quit\n")
+
+# -----------------------------
 # Arguments
 # -----------------------------
 parser = argparse.ArgumentParser()
@@ -38,7 +49,27 @@ auto_max = None
 ALPHA = 0.03
 MARGIN = 1.0
 
-colormap = cv2.COLORMAP_INFERNO
+# Colormap options
+colormaps = [
+    cv2.COLORMAP_JET,
+    cv2.COLORMAP_HOT,
+    cv2.COLORMAP_MAGMA,
+    cv2.COLORMAP_INFERNO,
+    cv2.COLORMAP_PLASMA,
+    cv2.COLORMAP_VIRIDIS
+]
+colormap_index = 3  # start with INFERNO
+
+# -----------------------------
+# Recording / HUD / Raw
+# -----------------------------
+recording = False
+video_writer = None
+fps = 9
+frame_counter = 0
+current_filename = ""
+hud = True
+raw_mode = False
 
 cv2.namedWindow("Thermal", cv2.WINDOW_NORMAL)
 
@@ -57,6 +88,7 @@ while True:
     CAL_OFFSET = -241.95
     temp_c = frame.astype(np.float32) * CAL_GAIN + CAL_OFFSET
 
+    # Stable auto scale
     frame_min = float(np.min(temp_c)) - MARGIN
     frame_max = float(np.max(temp_c)) + MARGIN
 
@@ -70,14 +102,18 @@ while True:
     if auto_max - auto_min < 0.1:
         auto_max = auto_min + 0.1
 
-    # Normalize using stable scale
-    norm = np.clip((temp_c - auto_min) / (auto_max - auto_min), 0, 1)
-    norm8 = np.uint8(norm * 255)
+    # -----------------------------
+    # Normalize for display
+    # -----------------------------
+    if raw_mode:
+        norm = (frame.astype(np.float32) - frame.min()) / (frame.max() - frame.min() + 1)
+        norm8 = np.uint8(norm * 255)
+    else:
+        norm = np.clip((temp_c - auto_min) / (auto_max - auto_min), 0, 1)
+        norm8 = np.uint8(norm * 255)
 
-    disp = cv2.resize(norm8, (width*scale, height*scale),
-                      interpolation=cv2.INTER_CUBIC)
-
-    heatmap = cv2.applyColorMap(disp, colormap)
+    disp = cv2.resize(norm8, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+    heatmap = cv2.applyColorMap(disp, colormaps[colormap_index])
 
     h, w = heatmap.shape[:2]
 
@@ -91,35 +127,26 @@ while True:
 
     center_temp = temp_c[height//2, width//2]
 
-    # Center temp text (with shadow)
-    txt = f"{center_temp:.1f}°C"
-    cv2.putText(heatmap, txt, (cx+20, cy+5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3)
-    cv2.putText(heatmap, txt, (cx+20, cy+5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+    if hud:
+        # Center temp text (with shadow)
+        txt = f"{center_temp:.1f} C"
+        cv2.putText(heatmap, txt, (cx+20, cy+5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3)
+        cv2.putText(heatmap, txt, (cx+20, cy+5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+
+        # Min/Max labels
+        max_temp = auto_max
+        min_temp = auto_min
+
+        def draw_label(img, text, x, y):
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            cv2.rectangle(img, (x, y-th-10), (x+tw+10, y+5), (0,0,0), -1)
+            cv2.putText(img, text, (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+
+        draw_label(heatmap, f"{max_temp:.1f} C", 10, 30)
+        draw_label(heatmap, f"{min_temp:.1f} C", w-150, 30)
 
     # -----------------------------
-    # Min/Max Labels (black boxes)
-    # -----------------------------
-    max_temp = auto_max
-    min_temp = auto_min
-
-    def draw_label(img, text, x, y):
-        (tw, th), _ = cv2.getTextSize(text,
-                                      cv2.FONT_HERSHEY_SIMPLEX,
-                                      0.7, 2)
-        cv2.rectangle(img, (x, y-th-10),
-                      (x+tw+10, y+5),
-                      (0,0,0), -1)
-        cv2.putText(img, text, (x+5, y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (255,255,255), 2)
-
-    draw_label(heatmap, f"{max_temp:.1f}°C", 10, 30)
-    draw_label(heatmap, f"{min_temp:.1f}°C", w-150, 30)
-
-    # -----------------------------
-    # Single Vertical Color Bar
+    # Color bar (optional)
     # -----------------------------
     bar_width = 30
     bar_height = h - 120
@@ -127,45 +154,62 @@ while True:
     bar_y = 60
 
     # Black frame
-    cv2.rectangle(heatmap,
-                  (bar_x-3, bar_y-3),
-                  (bar_x+bar_width+3, bar_y+bar_height+3),
-                  (0,0,0), -1)
-
-    # Gradient (TOP = HOT)
+    cv2.rectangle(heatmap, (bar_x-3, bar_y-3), (bar_x+bar_width+3, bar_y+bar_height+3), (0,0,0), -1)
     for i in range(bar_height):
         ratio = 1 - (i / bar_height)
         color_val = int(ratio * 255)
-        color = cv2.applyColorMap(
-            np.uint8([[color_val]]),
-            colormap)[0][0].tolist()
-
-        cv2.line(heatmap,
-                 (bar_x, bar_y+i),
-                 (bar_x+bar_width, bar_y+i),
-                 color, 1)
-
-    # Border
-    cv2.rectangle(heatmap,
-                  (bar_x-3, bar_y-3),
-                  (bar_x+bar_width+3, bar_y+bar_height+3),
-                  (255,255,255), 1)
-
-    # Scale numbers
-    cv2.putText(heatmap, f"{max_temp:.0f}",
-                (bar_x-45, bar_y+10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (255,255,255), 1)
-
-    cv2.putText(heatmap, f"{min_temp:.0f}",
-                (bar_x-45, bar_y+bar_height),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (255,255,255), 1)
+        color = cv2.applyColorMap(np.uint8([[color_val]]), colormaps[colormap_index])[0][0].tolist()
+        cv2.line(heatmap, (bar_x, bar_y+i), (bar_x+bar_width, bar_y+i), color, 1)
+    cv2.rectangle(heatmap, (bar_x-3, bar_y-3), (bar_x+bar_width+3, bar_y+bar_height+3), (255,255,255), 1)
+    cv2.putText(heatmap, f"{max_temp:.0f}", (bar_x-45, bar_y+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+    cv2.putText(heatmap, f"{min_temp:.0f}", (bar_x-45, bar_y+bar_height), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
     cv2.imshow("Thermal", heatmap)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    # -----------------------------
+    # Recording
+    # -----------------------------
+    if recording and video_writer is not None:
+        video_writer.write(heatmap)
+        frame_counter += 1
 
+    # -----------------------------
+    # Key controls
+    # -----------------------------
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord('q'):
+        break
+    if key == ord('m'):
+        colormap_index = (colormap_index + 1) % len(colormaps)
+    if key == ord('h'):
+        hud = not hud
+    if key == ord('r'):
+        raw_mode = not raw_mode
+    if key == ord('s'):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"screenshot_{timestamp}.png"
+        cv2.imwrite(filename, heatmap)
+        print(f"✅ Screenshot saved: {filename}")
+    if key == ord('v'):
+        recording = not recording
+        if recording:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            current_filename = f"thermal_{timestamp}.avi"
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            video_writer = cv2.VideoWriter(current_filename, fourcc, fps, (width*scale, height*scale))
+            frame_counter = 0
+            print("🎬 Recording started...")
+        else:
+            if video_writer is not None:
+                video_writer.release()
+                video_writer = None
+            print(f"✅ Video saved: {current_filename} ({frame_counter} frames)")
+
+# -----------------------------
+# Cleanup
+# -----------------------------
 cap.release()
+if video_writer is not None:
+    video_writer.release()
 cv2.destroyAllWindows()
