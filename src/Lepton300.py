@@ -42,7 +42,7 @@ width, height = 160, 120
 scale = 4
 
 # -----------------------------
-# Stable Auto Scale
+# Auto Scale
 # -----------------------------
 auto_min = None
 auto_max = None
@@ -88,7 +88,7 @@ while True:
     CAL_OFFSET = -241.95
     temp_c = frame.astype(np.float32) * CAL_GAIN + CAL_OFFSET
 
-    # Stable auto scale
+    # Auto scale
     frame_min = float(np.min(temp_c)) - MARGIN
     frame_max = float(np.max(temp_c)) + MARGIN
 
@@ -106,19 +106,22 @@ while True:
     # Normalize for display
     # -----------------------------
     if raw_mode:
+        # Grayscale display
         norm = (frame.astype(np.float32) - frame.min()) / (frame.max() - frame.min() + 1)
         norm8 = np.uint8(norm * 255)
+        disp = cv2.resize(norm8, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+        heatmap = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
     else:
+        # Color map display
         norm = np.clip((temp_c - auto_min) / (auto_max - auto_min), 0, 1)
         norm8 = np.uint8(norm * 255)
-
-    disp = cv2.resize(norm8, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
-    heatmap = cv2.applyColorMap(disp, colormaps[colormap_index])
+        disp = cv2.resize(norm8, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+        heatmap = cv2.applyColorMap(disp, colormaps[colormap_index])
 
     h, w = heatmap.shape[:2]
 
     # -----------------------------
-    # Crosshair (E-series style)
+    # Crosshair
     # -----------------------------
     cx, cy = w//2, h//2
     cv2.line(heatmap, (cx-15, cy), (cx+15, cy), (255,255,255), 1)
@@ -128,41 +131,33 @@ while True:
     center_temp = temp_c[height//2, width//2]
 
     if hud:
-        # Center temp text (with shadow)
+        # Center temp text
         txt = f"{center_temp:.1f} C"
         cv2.putText(heatmap, txt, (cx+20, cy+5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3)
         cv2.putText(heatmap, txt, (cx+20, cy+5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
 
-        # Min/Max labels
-        max_temp = auto_max
-        min_temp = auto_min
-
-        def draw_label(img, text, x, y):
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            cv2.rectangle(img, (x, y-th-10), (x+tw+10, y+5), (0,0,0), -1)
-            cv2.putText(img, text, (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-
-        draw_label(heatmap, f"{max_temp:.1f} C", 10, 30)
-        draw_label(heatmap, f"{min_temp:.1f} C", w-150, 30)
-
     # -----------------------------
-    # Color bar (optional)
+    # Color bar (with temps)
     # -----------------------------
     bar_width = 30
     bar_height = h - 120
     bar_x = w - 60
     bar_y = 60
 
-    # Black frame
-    cv2.rectangle(heatmap, (bar_x-3, bar_y-3), (bar_x+bar_width+3, bar_y+bar_height+3), (0,0,0), -1)
+    # Gradient
     for i in range(bar_height):
         ratio = 1 - (i / bar_height)
         color_val = int(ratio * 255)
-        color = cv2.applyColorMap(np.uint8([[color_val]]), colormaps[colormap_index])[0][0].tolist()
+        if raw_mode:
+            color = [color_val]*3
+        else:
+            color = cv2.applyColorMap(np.uint8([[color_val]]), colormaps[colormap_index])[0][0].tolist()
         cv2.line(heatmap, (bar_x, bar_y+i), (bar_x+bar_width, bar_y+i), color, 1)
-    cv2.rectangle(heatmap, (bar_x-3, bar_y-3), (bar_x+bar_width+3, bar_y+bar_height+3), (255,255,255), 1)
-    cv2.putText(heatmap, f"{max_temp:.0f}", (bar_x-45, bar_y+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-    cv2.putText(heatmap, f"{min_temp:.0f}", (bar_x-45, bar_y+bar_height), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+
+    # Border
+    cv2.rectangle(heatmap, (bar_x-1, bar_y-1), (bar_x+bar_width+1, bar_y+bar_height+1), (255,255,255), 1)
+    cv2.putText(heatmap, f"{auto_max:.0f}", (bar_x-40, bar_y+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+    cv2.putText(heatmap, f"{auto_min:.0f}", (bar_x-40, bar_y+bar_height), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
     cv2.imshow("Thermal", heatmap)
 
@@ -177,7 +172,6 @@ while True:
     # Key controls
     # -----------------------------
     key = cv2.waitKey(1) & 0xFF
-
     if key == ord('q'):
         break
     if key == ord('m'):
